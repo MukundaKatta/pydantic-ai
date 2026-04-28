@@ -13,6 +13,7 @@ from pydantic_ai._run_context import RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import BinaryContent, InstructionPart
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.usage import RunUsage
 
 from ._inline_snapshot import snapshot
@@ -329,6 +330,39 @@ class TestFastMCPToolsetToolDiscovery:
         async with toolset:
             tools = await toolset.get_tools(run_context)
             assert len(tools) == 0
+
+    async def test_get_tools_threads_max_retries(
+        self,
+        fastmcp_client: Client[FastMCPTransport],
+        run_context: RunContext[None],
+    ):
+        """The toolset's `max_retries` must reach the resulting `ToolsetTool`s.
+
+        Regression test for https://github.com/pydantic/pydantic-ai/issues/5180,
+        where `tool_for_tool_def` previously hardcoded `max_retries=1` instead of
+        threading the configured value through `get_tools`.
+        """
+        toolset = FastMCPToolset(fastmcp_client, max_retries=7)
+
+        async with toolset:
+            tools = await toolset.get_tools(run_context)
+            assert tools, 'expected at least one tool from the test FastMCP server'
+            for tool in tools.values():
+                assert tool.max_retries == 7
+
+        # Direct `tool_for_tool_def` calls (e.g. from durable wrappers) that don't
+        # pass an explicit `max_retries` should fall back to `self.max_retries`.
+        direct_tool = toolset.tool_for_tool_def(
+            ToolDefinition(name='_probe', description=None, parameters_json_schema={'type': 'object'})
+        )
+        assert direct_tool.max_retries == 7
+
+        # An explicit kwarg overrides the toolset default.
+        override_tool = toolset.tool_for_tool_def(
+            ToolDefinition(name='_probe', description=None, parameters_json_schema={'type': 'object'}),
+            max_retries=2,
+        )
+        assert override_tool.max_retries == 2
 
 
 class TestFastMCPToolsetToolCalling:
