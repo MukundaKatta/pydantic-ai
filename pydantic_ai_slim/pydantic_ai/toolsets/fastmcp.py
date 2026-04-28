@@ -208,7 +208,8 @@ class FastMCPToolset(AbstractToolset[AgentDepsT]):
                         },
                         return_schema=mcp_tool.outputSchema or None,
                         include_return_schema=self.include_return_schema,
-                    )
+                    ),
+                    max_retries=self.max_retries,
                 )
                 for mcp_tool in await self.client.list_tools()
             }
@@ -265,11 +266,20 @@ class FastMCPToolset(AbstractToolset[AgentDepsT]):
         else:
             return await self.direct_call_tool(name, tool_args)
 
-    def tool_for_tool_def(self, tool_def: ToolDefinition) -> ToolsetTool[AgentDepsT]:
+    def tool_for_tool_def(
+        self,
+        tool_def: ToolDefinition,
+        *,
+        max_retries: int | None = None,
+    ) -> ToolsetTool[AgentDepsT]:
+        # Fall back to the toolset-level `max_retries` so callers (e.g. durable wrappers)
+        # that don't pass an explicit value still get the configured default rather than
+        # a hardcoded `1`. See https://github.com/pydantic/pydantic-ai/issues/5180.
+        resolved_max_retries = max_retries if max_retries is not None else getattr(self, 'max_retries', 1)
         return ToolsetTool[AgentDepsT](
             tool_def=tool_def,
             toolset=self,
-            max_retries=self.max_retries,
+            max_retries=resolved_max_retries,
             args_validator=TOOL_SCHEMA_VALIDATOR,
         )
 
