@@ -77,11 +77,13 @@ with try_import() as starlette_import_successful:
     )
     from pydantic_ai.ui.vercel_ai.request_types import (
         DataUIPart,
+        DynamicToolApprovalRequestedPart,
         DynamicToolApprovalRespondedPart,
         DynamicToolInputAvailablePart,
         DynamicToolInputStreamingPart,
         DynamicToolOutputAvailablePart,
         DynamicToolOutputDeniedPart,
+        DynamicToolOutputErrorPart,
         FileUIPart,
         ReasoningUIPart,
         RegenerateMessage,
@@ -140,6 +142,73 @@ def test_build_run_input_allows_regenerate_without_message_id():
 
     assert isinstance(run_input, RegenerateMessage)
     assert run_input.message_id is None
+
+
+def test_build_run_input_allows_dynamic_tool_provider_fields():
+    states = [
+        {'state': 'input-streaming', 'input': {'city': 'Paris'}},
+        {'state': 'input-available', 'input': {'city': 'Paris'}},
+        {'state': 'output-available', 'input': {'city': 'Paris'}, 'output': {'temperature': 18}},
+        {'state': 'output-error', 'input': {'city': 'Paris'}, 'errorText': 'failed'},
+        {'state': 'approval-requested', 'input': {'city': 'Paris'}, 'approval': {'id': 'approval_1'}},
+        {
+            'state': 'approval-responded',
+            'input': {'city': 'Paris'},
+            'approval': {'id': 'approval_1', 'approved': True},
+        },
+        {'state': 'output-denied', 'input': {'city': 'Paris'}},
+    ]
+    data = {
+        'trigger': 'submit-message',
+        'id': 'req_123',
+        'messages': [
+            {
+                'id': 'msg_1',
+                'role': 'assistant',
+                'parts': [
+                    {
+                        'type': 'dynamic-tool',
+                        'toolName': 'get_weather',
+                        'toolCallId': f'tool_call_{i}',
+                        'title': f'Weather call {i}',
+                        'providerExecuted': bool(i % 2),
+                        **state,
+                    }
+                    for i, state in enumerate(states)
+                ],
+            }
+        ],
+    }
+
+    run_input = VercelAIAdapter.build_run_input(json.dumps(data).encode())
+
+    assert isinstance(run_input, SubmitMessage)
+    parts = run_input.messages[0].parts
+    expected_types = [
+        DynamicToolInputStreamingPart,
+        DynamicToolInputAvailablePart,
+        DynamicToolOutputAvailablePart,
+        DynamicToolOutputErrorPart,
+        DynamicToolApprovalRequestedPart,
+        DynamicToolApprovalRespondedPart,
+        DynamicToolOutputDeniedPart,
+    ]
+    dynamic_parts = cast(
+        list[
+            DynamicToolInputStreamingPart
+            | DynamicToolInputAvailablePart
+            | DynamicToolOutputAvailablePart
+            | DynamicToolOutputErrorPart
+            | DynamicToolApprovalRequestedPart
+            | DynamicToolApprovalRespondedPart
+            | DynamicToolOutputDeniedPart
+        ],
+        parts,
+    )
+    assert [type(part) for part in dynamic_parts] == expected_types
+    for i, part in enumerate(dynamic_parts):
+        assert part.title == f'Weather call {i}'
+        assert part.provider_executed is bool(i % 2)
 
 
 @pytest.mark.skipif(not openai_import_successful(), reason='OpenAI not installed')
